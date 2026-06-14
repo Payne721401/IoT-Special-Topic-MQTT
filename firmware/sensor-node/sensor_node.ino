@@ -1,27 +1,33 @@
-//include必要函式庫
+// Sensor node: reads a Senseair S8 CO2 sensor (Modbus RTU over UART2) and an
+// SHT35 temperature/humidity sensor (I2C), publishes the readings to MQTT, and
+// derives a CO2-driven fan-speed command. See ../../docs/protocol.md for the
+// wire format and ../../docs/hardware.md for the pinout.
 #include <Arduino.h>
 #include <Wire.h>
 #include <WiFi.h>
 #include <PubSubClient.h>
 #include <ArtronShop_SHT3x.h>
 
-//Define S8腳位
+// Copy secrets.example.h to secrets.h and fill in your WiFi/MQTT settings.
+#include "secrets.h"
+
+// S8 CO2 sensor — UART2 pins
 #define TXD2 17
 #define RXD2 16
 
-//Define SHT35腳位
-#define SDA_PIN 21 
-#define SCL_PIN 22 
+// SHT35 temp/humidity sensor — I2C pins
+#define SDA_PIN 21
+#define SCL_PIN 22
 ArtronShop_SHT3x sht35(0x44, &Wire); // ADDR: 0 => 0x44, ADDR: 1 => 0x45
 
-//publish用的全域變數
+// Frame prefixes/suffix for the published messages (see docs/protocol.md)
 String CO2_pub = "0x55, 0xD11704d, S8, ";
 String temp_pub = "0x55, Temperature, SHT35, ";
 String humid_pub = "0x55, Humidity, SHT35, ";
 String ending = ", 0xED";
 String fan_old = "None";
 
-//S8的全域變數
+// S8 Modbus state
 byte CO2req[] = {0xFE, 0X04, 0X00, 0X03, 0X00, 0X01, 0XD5, 0XC5};
 byte Response[20];
 uint16_t crc_02;
@@ -41,21 +47,13 @@ byte Tstreq[] = {0xFE, 0x44, 0X00, 0X01, 0X02, 0X9F, 0X25};         // undocumen
 int Test_len = 7;               // length of Testrequest in case of function 44 only 7 otherwise 8
 ////////////////////
 
-//WiFi和MQTT Broker id(註解可方便切換不同網域使用)
-const char *ssid = "ATM-ideasky"; // Enter your WiFi name
-//const char *ssid = "Payne";
-const char *password = "ideasky@atm";  // Enter WiFi password
-//const char *password = "00000000";
-const char *mqtt_broker = "192.168.50.107";
-//const char *mqtt_broker = "test.mosquitto.org";
-const char *topic = "esp32/output";
-//const char *mqtt_username = "emqx";
-//const char *mqtt_password = "public";
-const int mqtt_port = 1883;
+// WiFi and MQTT settings come from secrets.h (see secrets.example.h).
+const char *ssid = WIFI_SSID;
+const char *password = WIFI_PASSWORD;
+const char *mqtt_broker = MQTT_BROKER_IP;
+const char *topic = MQTT_TOPIC;
+const int mqtt_port = MQTT_PORT;
 
-///////////////
-
-//通過Wifi連接至mqtt
 WiFiClient espClient;
 PubSubClient client(espClient);
 
@@ -69,7 +67,7 @@ void send_Request (byte * Request, int Re_len)
   }
 }
 
-//S8讀取request
+// Read the S8 Modbus response into the Response[] buffer
 void read_Response (int RS_len)
 {
   int01 = 0;
@@ -130,7 +128,8 @@ unsigned long get_Value(int RS_len)
     return 99;
   }
 }
-//以上這段我貼別人的我也沒很懂，時間關係之後有機會再改
+// NOTE: the S8 Modbus access above is a candidate to move into a dedicated,
+// unit-tested driver.
 
 
 void setup() {
@@ -143,12 +142,12 @@ void setup() {
  WiFi.begin(ssid, password);
  while (WiFi.status() != WL_CONNECTED) {
      delay(500);
-     Serial.println("Connecting to WiFi..");  //Check wifi連接狀態
+     Serial.println("Connecting to WiFi..");
  }
  Serial.println("Connected to the WiFi network");
- 
+
   while (!sht35.begin()) {
-    Serial.println("SHT35 not found !");  //check sht35連接狀態
+    Serial.println("SHT35 not found !");
     delay(2000);
   }
 
@@ -157,30 +156,27 @@ void setup() {
     delay(2000);
  }
  
- //connecting to a mqtt broker 連接至mqtt broker
+ // Connect to the MQTT broker (client id derived from the ESP32 MAC address)
  client.setServer(mqtt_broker, mqtt_port);
  client.setCallback(callback);
  while (!client.connected()) {
-     String client_id = "esp32-client-"; //設定client id
+     String client_id = "esp32-client-";
      client_id += String(WiFi.macAddress());
-     Serial.printf("The client %s connects to the public mqtt broker\n", client_id.c_str());
-     if (client.connect(client_id.c_str())) {  //確認broker連接狀態
-         
-         Serial.println("Public mqtt broker connected");
+     Serial.printf("The client %s connects to the mqtt broker\n", client_id.c_str());
+     if (client.connect(client_id.c_str())) {
+         Serial.println("MQTT broker connected");
      } else {
          Serial.print("failed with state ");
          Serial.print(client.state());
          delay(2000);
      }
  }
- // mqtt broker publish and subscribe
- client.subscribe(topic); //訂閱你要的topic
- client.publish(topic, "Hi I'm ESP32 ^^"); //有成功連接會先publish這段至broker
-  Serial.begin(115200);
-  Serial1.begin(9600, SERIAL_8N1, RXD2, TXD2);      // UART to Sensair CO2 Sensor
+ client.subscribe(topic);
+ client.publish(topic, "Hi I'm ESP32 ^^");  // announce presence on connect
+  Serial1.begin(9600, SERIAL_8N1, RXD2, TXD2);      // UART to Senseair S8 CO2 sensor
 
-
-  //以下這段都是處理S8的set up，很冗，之後有時間再改
+  // One-time S8 diagnostic dump: ABC period, sensor ID, firmware, and all
+  // holding registers. Useful when bringing up the sensor; harmless at runtime.
   Serial.println();
   Serial.print("ABC-Tage: ");  
   send_Request(ABCreq, 8);                     // Request ABC-Information from the Sensor
@@ -254,13 +250,12 @@ void setup() {
          Serial.print("   CO2");      
       Serial.println("  Ende ");
     }
-    else 
+    else
       Serial.print("CRC-Error");
   }
-}  
- //以上這段都是處理S8的set up，很冗，之後有時間再改
+}
 
-//mqtt broker的call back 函式(處理訂閱的broker接收到的訊息)
+// MQTT subscribe callback: logs any message received on the subscribed topic.
 void callback(char *topic, byte *payload, unsigned int length) {
  Serial.print("Message arrived in topic: ");
  Serial.println(topic);
@@ -274,21 +269,21 @@ void callback(char *topic, byte *payload, unsigned int length) {
 }
 
 void loop() {
-  send_Request(CO2req, 8);               // send request for CO2-Data to the Sensor
-  read_Response(7);                      // receive the response from the Sensor
-  
-  //SHT35溫溼度讀取&定義接收到的資料值
+  send_Request(CO2req, 8);               // request CO2 data from the S8 sensor
+  read_Response(7);                      // receive the response
+
+  // Read SHT35 temperature & humidity
   if (!sht35.measure()){
     Serial.println("SHT35 Measurement failed");
   }
-  float temp = sht35.temperature();  
+  float temp = sht35.temperature();
   float humid = sht35.humidity();
 
-  //S8的co2濃度讀取
+  // Read CO2 concentration (ppm) from the S8 response
   unsigned long CO2 = get_Value(7);
   delay(2000);
 
-  //print感測器資料
+  // Log the latest readings
   String CO2s = "CO2: " + String(CO2);
   String Temperature = "Temperature: " + String(temp);
   String Humidity = "Humidity: " + String(humid);
@@ -296,7 +291,7 @@ void loop() {
   Serial.println(Temperature);
   Serial.println(Humidity);
 
-//  將接收到的訊息處理成字串
+  // Build the sensor frames (see docs/protocol.md)
   temp_pub = temp_pub+String(temp)+ending;
   humid_pub = humid_pub+String(humid)+ending;
   if (CO2<1000){
@@ -306,47 +301,13 @@ void loop() {
     CO2_pub = CO2_pub+String(CO2)+ending;
   }
 
-//SHT35 Version
-// if ((co2_conc >= 2000) or (temp > 35)){
-//   trun_fan = "0x55, 0xD11704d, 0xD2, fan_cw, 100";
-//   }
-//  else if ((co2_conc >= 1500) or (temp > 32)){
-//   trun_fan = "0x55, 0xD11704d, 0xD2, fan_cw, 60";
-//   }
-//  else if ((co2_conc >= 1000) or (temp > 30)){
-//   trun_fan = "0x55, 0xD11704d, 0xD2, fan_cw, 80";
-//   }
-//  else if ((co2_conc >= 600) or (temp > 27)){
-//   trun_fan = "0x55, 0xD11704d, 0xD2, fan_cw, 20";
-//   }
-//  else{
-//   trun_fan = "0x55, 0xD11704d, 0xD2, fan_cw, 0";
-//   }
-
-
-// if ((CO2 >= 2000) ){
-//   trun_fan = "0x55, 0xD11704d, 0xD2, fan_cw, 100";
-//   }
-//  else if ((CO2 >= 1500)){
-//   trun_fan = "0x55, 0xD11704d, 0xD2, fan_cw, 80";
-//   }
-//  else if ((CO2 >= 1000)){
-//   trun_fan = "0x55, 0xD11704d, 0xD2, fan_cw, 60";
-//   }
-//  else if ((CO2 >= 600)){
-//   trun_fan = "0x55, 0xD11704d, 0xD2, fan_cw, 20";
-//   }
-//  else{
-//   trun_fan = "0x55, 0xD11704d, 0xD2, fan_cw, 0";
-//   }
-
-//根據CO2濃度決定風扇強度(0最強5最弱)，輸出格式可以改(需同時調整fan control)
-
+  // Map CO2 (ppm) to a fan speed (0 = full power ... 5 = lowest, 25 = off).
+  // Must stay in sync with the fan-controller. See docs/protocol.md.
   String turn_fan_R;
   String turn_fan_L;
   if ((CO2 >= 2000) ){
    turn_fan_R = "55,Bike01,M_R,0,ED";
-   turn_fan_L = "55,Bike01,M_L,0,ED"; //fan_L目前不publish，需分開控制風扇時可再調整
+   turn_fan_L = "55,Bike01,M_L,0,ED"; // M_L is not published today; kept for future split control
    }
   else if ((CO2 >= 1700)){
    turn_fan_R = "55,Bike01,M_R,2,ED";
@@ -365,11 +326,11 @@ void loop() {
    turn_fan_L = "55,Bike01,M_L,5,ED";
    }
   else{
-   turn_fan_R = "55,Bike01,M_R,25,ED"; //不給電
+   turn_fan_R = "55,Bike01,M_R,25,ED"; // 25 = motor off
    turn_fan_L = "55,Bike01,M_L,25,ED";
    }
 
-  //將數據轉換為可publish的格式
+  // Convert the String frames into char buffers for publishing
   char Buf_co2[33];
   char Buf_temp[38];
   char Buf_humid[38];
@@ -385,12 +346,12 @@ void loop() {
   turn_fan_R.toCharArray(fan_R, 35);
   turn_fan_L.toCharArray(fan_L, 35);
   
-  //publish溫濕度/CO2濃度/風扇控制訊息
+  // Publish temperature / humidity / CO2, and the fan command on change
   client.publish(topic, Buf_temp);
   client.publish(topic, Buf_humid);
   client.publish(topic, Buf_co2);
    if(turn_fan_R != fan_old){
-    client.publish(topic, fan_R); //濃度達到門檻再publish新的風扇控制訊息
+    client.publish(topic, fan_R); // only publish a new fan command when the level changes
   }
   delay(500);
   fan_old = turn_fan_R;

@@ -40,5 +40,18 @@
 # debug information files
 *.dwo
 
-# WiFi settings
+# Secrets (copy secrets.example.h -> secrets.h). Never commit real credentials.
 secrets.h
+
+# Local-only planning notes (not part of the public portfolio)
+docs/roadmap.md
+
+# PlatformIO (Phase 2)
+.pio/
+
+# Node / tooling
+node_modules/
+
+# OS / editor cruft
+.DS_Store
+Thumbs.db
