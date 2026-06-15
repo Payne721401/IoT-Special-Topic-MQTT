@@ -52,6 +52,10 @@ docs/roadmap.md
 # Node / tooling
 node_modules/
 
+# Python virtualenv
+.venv/
+__pycache__/
+
 # OS / editor cruft
 .DS_Store
 Thumbs.db

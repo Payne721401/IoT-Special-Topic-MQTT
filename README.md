@@ -1,5 +1,7 @@
 # Smart Classroom — MQTT IoT (ESP32 + Raspberry Pi)
 
+[![CI](https://github.com/Payne721401/IoT-Special-Topic-MQTT/actions/workflows/ci.yml/badge.svg)](https://github.com/Payne721401/IoT-Special-Topic-MQTT/actions/workflows/ci.yml)
+
 A closed-loop air-quality system for a classroom: an **ESP32 edge node** reads CO2,
 temperature and humidity, publishes them over **MQTT**, and automatically drives ventilation
 fans based on the CO2 level. A **Raspberry Pi** runs the MQTT broker (Mosquitto) and a
@@ -17,6 +19,9 @@ fans based on the CO2 level. A **Raspberry Pi** runs the MQTT broker (Mosquitto)
 - **Closed-loop control** — CO2 concentration mapped to a fan-speed command and actuated
   with PWM motor control on a second ESP32.
 - **A small custom wire protocol** with a documented [spec](docs/protocol.md).
+- **Testable firmware** — the protocol codec, control law and CRC live in a
+  hardware-independent C++ library ([`lib/protocol/`](lib/protocol/)) covered by host unit
+  tests that run in CI, with no board required.
 
 ## Architecture
 
@@ -46,6 +51,10 @@ frame (`0x55, <id>, <type>, <value>, 0xED`). See [docs/protocol.md](docs/protoco
 firmware/
   sensor-node/        ESP32 sketch: S8 + SHT35 -> MQTT, CO2 -> fan command
   fan-controller/     ESP32 sketch: MQTT/UART -> dual PWM motor control
+lib/
+  protocol/           hardware-independent C++ codec, control law and CRC
+test/
+  test_protocol/      host unit tests (Unity)
 node-red/
   functions/          Node-RED function nodes that parse each frame type
   flows/              (export your flows.json here — see node-red/flows/README.md)
@@ -53,6 +62,7 @@ docs/
   architecture.md     data flow and components
   protocol.md         the wire-protocol specification
   hardware.md         sensors, pinout, wiring
+platformio.ini        build (esp32) and test (native) environments
 ```
 
 ## Hardware
@@ -69,14 +79,50 @@ Full pinout and wiring notes in [docs/hardware.md](docs/hardware.md).
 
 ## Build & flash
 
-1. Install the Arduino IDE (or PlatformIO) with ESP32 board support.
-2. Install libraries: `PubSubClient`, `ArtronShop_SHT3x`, and an `analogWrite` shim for ESP32.
-3. In each sketch folder (`firmware/sensor-node/`, `firmware/fan-controller/`), copy
+The firmware is built with [PlatformIO](https://platformio.org/) (the sketches share the
+code in `lib/`, so they are no longer standalone Arduino-IDE sketches). Dependencies are
+declared in `platformio.ini` and fetched automatically.
+
+1. Install PlatformIO (`pip install platformio`, or the VS Code extension).
+2. In each sketch folder (`firmware/sensor-node/`, `firmware/fan-controller/`), copy
    `secrets.example.h` to `secrets.h` and fill in your WiFi/MQTT settings.
-4. Open the `.ino`, select your ESP32 board, and upload.
+3. Build / upload:
+   ```bash
+   pio run -e sensor-node -t upload
+   pio run -e fan-controller -t upload
+   ```
 
 Secrets (`secrets.h`) are git-ignored and never committed.
 
 > Security note: an earlier commit in this repo's history contained a hard-coded broker
 > password. That credential has been invalidated and the code now loads all credentials from
 > the git-ignored `secrets.h`.
+
+## Testing
+
+The protocol codec, the CO2→fan control law and the Modbus CRC are isolated in
+[`lib/protocol/`](lib/protocol/) with **no Arduino dependencies**, so they can be unit-tested
+on a host machine — no ESP32 required. Tests run automatically in CI on every push.
+
+```bash
+pip install platformio   # one-time
+pio test -e native       # run the host unit tests
+```
+
+The suite (see [`test/test_protocol/`](test/test_protocol/)) covers frame encode/decode and
+round-trips, malformed-frame rejection, CRC against known-good Modbus vectors, and every CO2
+fan-speed threshold boundary.
+
+## Run without hardware
+
+You can run the whole MQTT pipeline with no ESP32 and no Raspberry Pi. A Python simulator
+publishes realistic sensor frames and a monitor prints the decoded values:
+
+```bash
+pip install -r sim/requirements.txt
+python sim/monitor.py          --host localhost   # terminal 1
+python sim/sensor_simulator.py --host localhost   # terminal 2
+```
+
+Point them at a local Mosquitto broker or the public `test.mosquitto.org` — no Docker
+required. See [sim/README.md](sim/README.md) for details.
